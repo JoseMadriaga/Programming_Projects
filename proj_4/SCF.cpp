@@ -1,0 +1,368 @@
+#include "SCF.h"
+#include <cmath>
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <numeric>
+using namespace std;
+
+void SCF::read_txt(const char* filename,Matrix &temp) {
+	ifstream txt(filename);
+	assert(txt.good());
+	double num1 = 0;
+	double num2 = 0; 
+	temp.resize(indices, indices);
+	temp.setZero();
+	while(txt)
+	{
+		for (int i = 0; i < indices; i++) {
+			for (int j = 0; j < i+1; j++) {
+				txt >> num1 >> num2 >> temp(i,j);
+				temp(j,i)=temp(i,j);
+			}
+		}
+	cout << temp << endl;
+	txt.close();
+	}	
+}
+
+int c_index(int a, int b){
+	int val=0;
+	if (a>b)
+	{
+		val = a*(a+1)/2 + b;
+	}
+	else 
+	{
+		val = b*(b+1)/2 + a;
+	}
+	return val; 
+}
+void SCF::read_twoe(const char* filename, vector <double>  &temp) {
+	ifstream txt(filename);
+	assert(txt.good());
+	temp.resize(26106);
+	while(txt)
+	{
+		txt >> p >> q >> r >> s >> temp[c_index(c_index(p,q),c_index(r,s))];
+		cout << p << '\t' << q << '\t' << r << '\t' << s << '\t' <<  temp[c_index(c_index(p,q),c_index(r,s))] << endl;
+	}
+	txt.close();
+}
+void SCF::ortho() {
+	Eigen::SelfAdjointEigenSolver<Matrix> solver(overlap);
+	Matrix evecs = solver.eigenvectors();
+	Matrix evals = solver.eigenvalues();
+
+	Matrix evals_mat;
+
+	evals_mat.resize(indices,indices);
+	evals_mat.setZero();
+	for (int i = 0; i < indices; i++){
+		evals_mat(i,i) = 1/sqrt(evals(i));
+	}
+	ortho_S = evecs*evals_mat*evecs.transpose();
+	for (int i=0; i < indices; i++){
+		for (int j=0; j < indices; j++){
+			if (abs(ortho_S(i,j)) < 1e-9)
+				ortho_S(i,j) = 0;
+		}
+	}
+	cout << ortho_S << endl;
+}
+void SCF::guess(){
+	Fock = ortho_S.transpose() * C_ham * ortho_S;
+	        for (int i=0; i < indices; i++){
+               		 for (int j=0; j < indices; j++){
+                        if (abs(Fock(i,j)) < 1e-9)
+                                Fock(i,j) = 0;
+                }
+        }
+	cout << "Fock Matrix" << endl;
+	cout << Fock << endl;
+	Eigen::SelfAdjointEigenSolver<Matrix> solver(Fock);
+	Matrix evecs = solver.eigenvectors();
+	Matrix evals = solver.eigenvalues();
+
+	AO = ortho_S*evecs;
+	        for (int i=0; i < indices; i++){
+                	for (int j=0; j < indices; j++){
+                        if (abs(AO(i,j)) < 1e-9)
+                                AO(i,j) = 0;
+                }
+        }
+	cout << "AO matrix" << endl;
+	cout << AO << endl;
+	
+	Int_Dens.resize(indices,indices);
+	Int_Dens.setZero();
+	for (int i=0; i < indices; i++){
+		for (int j=0; j < indices; j++){
+			for (int k=0; k < 5; k++){
+				Int_Dens(i,j) += AO(i,k)*AO(j,k);
+			}
+		}
+	}
+	 for (int i=0; i < indices; i++){
+                for (int j=0; j < indices; j++){
+                        if (abs(Int_Dens(i,j)) < 1e-9)
+                                Int_Dens(i,j) = 0;
+                }
+        }
+	cout << "Initial Guess Density" << endl;
+	cout << Int_Dens << endl;
+			
+}
+void SCF::int_SCF(){
+	int_E = 0;
+	for (int i = 0; i < indices; i++){
+		for (int j = 0; j < indices; j++){
+			int_E += Int_Dens(i,j)*(C_ham(i,j)*2);
+		}
+	}
+	int_E += nuc_e;
+	cout << int_E << endl;
+}
+void SCF::new_Fock(){
+	temp_Fock.resize(indices,indices);
+	temp_Fock.setZero();
+	for (int i = 1; i < indices+1; i++){
+		for (int j=1; j < indices+1; j++){
+			temp_Fock(i-1,j-1) += C_ham(i-1,j-1);
+			for (int k=1; k < indices+1; k++){
+				for (int l=1; l < indices+1; l++){
+					temp_Fock(i-1,j-1) += Int_Dens(k-1,l-1)*(2*twoe[c_index(c_index(i,j),c_index(k,l))] - twoe[c_index(c_index(i,k),c_index(j,l))]);
+					/*cout << i << j << k << l << twoe[c_index(c_index(i,j),c_index(k,l))] << endl;
+					cout << i << j << k << l << twoe[c_index(c_index(i,k),c_index(j,l))] << endl;
+					cout << temp_Fock << endl;*/
+				}
+			}
+		}
+	}
+	/*cout << "New Fock Matrix" << endl;
+	cout << temp_Fock << endl;*/
+}
+void SCF::dif_Dens(){
+	Dens_rms = 0;
+	for (int i =0; i < indices; i++){
+		for (int j=0; j < indices; j++){
+			Dens_rms+= pow(new_Dens(i,j)-old_Dens(i,j),2.0);
+		}
+	}
+	Dens_rms = sqrt(Dens_rms);
+}
+
+void SCF::iter_SCF(){
+        int_E = 0;
+        for (int i = 0; i < indices; i++){
+                for (int j = 0; j < indices; j++){
+                        int_E += Int_Dens(i,j)*(C_ham(i,j)+temp_Fock(i,j));
+                }
+        }
+        int_E += nuc_e;
+        /*cout << int_E << endl;*/
+}
+void SCF::iter_guess(){
+        Fock = ortho_S.transpose() * temp_Fock * ortho_S;
+                for (int i=0; i < indices; i++){
+                         for (int j=0; j < indices; j++){
+                        if (abs(Fock(i,j)) < 1e-9)
+                                Fock(i,j) = 0;
+                }
+        }
+        /*cout << "Fock Matrix" << endl;
+        cout << Fock << endl;*/
+        Eigen::SelfAdjointEigenSolver<Matrix> solver(Fock);
+        Matrix evecs = solver.eigenvectors();
+        Matrix evals = solver.eigenvalues();
+
+        AO = ortho_S*evecs;
+                for (int i=0; i < indices; i++){
+                        for (int j=0; j < indices; j++){
+                        if (abs(AO(i,j)) < 1e-9)
+                                AO(i,j) = 0;
+                }
+        }
+        /*cout << "AO matrix" << endl;
+        cout << AO << endl;*/
+
+        Int_Dens.resize(indices,indices);
+        Int_Dens.setZero();
+        for (int i=0; i < indices; i++){
+                for (int j=0; j < indices; j++){
+                        for (int k=0; k < 5; k++){
+                                Int_Dens(i,j) += AO(i,k)*AO(j,k);
+                        }
+                }
+        }
+         for (int i=0; i < indices; i++){
+                for (int j=0; j < indices; j++){
+                        if (abs(Int_Dens(i,j)) < 1e-9)
+                                Int_Dens(i,j) = 0;
+                }
+        }
+       /* cout << "Initial Guess Density" << endl;
+        cout << Int_Dens << endl;*/
+}
+void SCF::converge(){
+	iter = 1;
+	old_E = int_E;
+	new_Fock();
+	old_Dens = Int_Dens;
+	iter_guess();
+	new_Dens = Int_Dens;
+	iter_SCF();
+	new_E = int_E;
+	dif_E = abs(new_E - old_E);
+	dif_Dens();
+	cout << "iterations " << '\t'  << "Total Energy " << '\t' << "Delta E " << '\t' << "RMS " << endl;
+        cout << iter << '\t'  << int_E << '\t'  << dif_E << '\t'  << Dens_rms << endl; 
+	while ( dif_E > pow(10,-12) && Dens_rms > pow(10,-12) ){
+		old_E = int_E;
+        	new_Fock();
+        	old_Dens = Int_Dens;
+        	iter_guess();
+        	new_Dens = Int_Dens;
+        	iter_SCF();
+        	new_E = int_E;
+        	dif_E = abs(new_E - old_E);
+		dif_Dens();
+		iter += 1;
+		cout << "iterations" << '\t' << "Total Energy" << '\t' << "Delta E" << '\t' << "RMS" << endl;
+        	cout << iter << '\t' << int_E << '\t' << dif_E << '\t' << Dens_rms << endl; 
+	}
+	cout << "Final Energy" << endl;
+	printf("%8.12f", int_E);
+}
+void SCF::MO(){
+	MO_Fock.resize(indices, indices);
+	MO_Fock.setZero();
+	for (int i = 0; i < indices; i++){
+		for (int j=0; j < indices;  j++){
+			for (int k=0; k < indices; k++){
+				for (int l=0; l < indices; l++){
+					MO_Fock(k,l) += AO(i,l)*AO(j,k)*temp_Fock(i,j);
+					
+				}
+			}
+		}
+	}
+	/*for (int i=0; i < indices; i++){
+		for (int j=0; j < indices; j++){
+			if (abs(MO_Fock(i,j)) < 1e-12)
+				MO_Fock(i,j) = 0;
+		}
+	}*/
+	cout << " " << endl; 
+	cout << "MO matrix" << endl;
+	cout << MO_Fock << endl;
+	MO_coef.resize(indices, indices);
+	MO_coef.setZero();
+	Eigen::SelfAdjointEigenSolver<Matrix> solver(Fock);
+        Matrix evecs = solver.eigenvectors();
+	MO_coef = ortho_S*evecs;
+	/*for (int i = 0; i < indices; i++){
+		for ( int j =0; j < indices; j++){
+			if (abs(MO_coef(i,j)) < 1e-12)
+				MO_coef(i,j) = 0;
+		}
+	}*/
+        cout << "MO coefficent " << endl;
+	cout << MO_coef << endl;
+}
+void SCF::conv_twoe(){
+	twoe_MO.resize(twoe.size());
+	int ijkl = 0;
+	for (int i = 0; i < indices; i++){
+		for (int j = 0; j <= i; j++){
+			for (int k = 0; k <= i ; k++){
+				for (int l = 0; l <= ( i == k ? j : k) ; l++, ijkl++){
+
+					for (int p = 0; p < indices; p++){
+						for (int q = 0; q < indices; q++){
+							for (int r=0; r < indices; r++){
+								for (int s=0; s < indices; s++){
+									twoe_MO[ijkl] += AO(p,i)*AO(q,j)*AO(r,k)*AO(s,l)*twoe[c_index(c_index(p+1,q+1),c_index(r+1,s+1))];
+									//cout << p+1 << '\t' << q+1 << '\t' << r+1  << '\t' <<  s+1 << '\t' << twoe[c_index(c_index(p+1,q+1),c_index(r+1,s+1))] << endl;
+								}
+							}
+						}
+					}
+				cout << i << '\t' << j << '\t' << k << '\t' <<  l << '\t' << twoe_MO[ijkl] << endl;
+				}
+			}
+		}
+	}
+}
+void SCF::smarconv_twoe(){
+	smartwoe_MO.resize(twoe.size());
+	Matrix X;
+	Matrix Y;
+	Matrix TMP;
+	ijkl = 0;
+	X.resize(indices,indices);
+	X.setZero();
+	TMP.resize((indices*(indices+1)/2),(indices*(indices+1)/2));
+
+	for (int i=0, ij = 0; i < indices; i++){
+		for (int j=0; j <= i; j++, ij++){
+			for ( int k=0, kl=0; k < indices; k++){
+				for (int l=0; l <= k; l++, kl++){
+					X(k,l) = X(l,k) = twoe[c_index(c_index(i+1,j+1),c_index(k+1,l+1))];
+				}
+			}
+		X = AO.transpose() * X * AO;
+		for (int k =0, kl=0; k <indices; k++){
+			for (int l=0; l <= k; l++, kl++){
+				TMP(kl,ij) = X(k,l);
+			}
+		}
+		X.setZero();
+		}
+	}
+	
+	for (int k =0, kl=0; k < indices; k++){
+		for (int l =0; l <= k; l++, kl++){
+			for( int i =0, ij=0; i < indices; i++){
+				for (int j=0; j <= i; j++, ij++){
+					X(i,j) = X(j,i) = TMP(kl,ij);
+					}
+				}
+			X = AO.transpose() * X * AO;
+			for (int i=0, ij=0; i < indices; i++){
+				for (int j =0; j <= i; j++, ij++){
+					smartwoe_MO[c_index(kl,ij)] = X(i,j);
+					cout << smartwoe_MO[c_index(kl,ij)] << endl;
+				}
+			}
+		}
+	}
+} 
+			 		
+void SCF::MP2_energy(){
+	E_MP2 = 0;
+	for (int i = 0; i < 5; i++){
+		for (int a=5; a < indices; a++){
+			for (int j =0; j < 5; j++){	
+				for (int b=5; b < indices; b++){
+					E_MP2 += (twoe_MO[c_index(c_index(i,a),c_index(j,b))]*(2*twoe_MO[c_index(c_index(i,a),c_index(j,b))] - twoe_MO[c_index(c_index(i,b),c_index(j,a))]))/(MO_Fock(i,i) + MO_Fock(j,j) - MO_Fock(a,a) -  MO_Fock(b,b));
+				}
+			}
+		}
+	}
+	printf(" %2.12f\n ", E_MP2);
+}
+
+void SCF::smarMP2_energy(){
+        smarE_MP2 = 0;
+        for (int i = 0; i < 5; i++){
+                for (int a=5; a < indices; a++){
+                        for (int j =0; j < 5; j++){
+                                for (int b=5; b < indices; b++){
+                                        smarE_MP2 += (smartwoe_MO[c_index(c_index(i,a),c_index(j,b))]*(2*smartwoe_MO[c_index(c_index(i,a),c_index(j,b))] - smartwoe_MO[c_index(c_index(i,b),c_index(j,a))]))/(MO_Fock(i,i) + MO_Fock(j,j) - MO_Fock(a,a) -  MO_Fock(b,b));
+                                }
+                        }
+                }
+        }
+        printf(" %2.12f\n ", smarE_MP2);
+} 									    	
